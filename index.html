@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Chaos Gravity Toybox PWA</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #050508; overflow: hidden;
+            font-family: system-ui, -apple-system, sans-serif;
+            user-select: none; touch-action: none;
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+        #controls {
+            position: absolute; top: env(safe-area-inset-top, 10px); left: 10px; right: 10px;
+            background: rgba(15, 15, 20, 0.85); backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1); padding: 12px; border-radius: 12px;
+            color: white; display: flex; flex-wrap: wrap; gap: 8px; z-index: 10;
+        }
+        .ui-element { flex: 1 1 calc(33% - 8px); min-width: 90px; }
+        select, button {
+            width: 100%; background: #252530; border: 1px solid #444;
+            color: white; padding: 10px; border-radius: 6px; font-size: 12px; font-weight: bold;
+        }
+        button { background: #ffcc00; color: #000; border: none; }
+        .clear-btn { background: #e74c3c; color: white; }
+        #indicator {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.4); font-size: 11px; pointer-events: none;
+            background: rgba(0,0,0,0.6); padding: 6px 14px; border-radius: 20px; text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <div class="ui-element">
+            <select id="itemType">
+                <option value="emoji">😂 Emoji</option>
+                <option value="bomb">💣 Bomb</option>
+                <option value="balloon">🎈 Balloon</option>
+            </select>
+        </div>
+        <div class="ui-element"><button id="burstBtn">💥 Burst</button></div>
+        <div class="ui-element"><button id="clearBtn" class="clear-btn">🧹 Clear</button></div>
+    </div>
+
+    <div id="indicator">📱 Tap screen once to lock sensor permissions. Shake to detonate!</div>
+    <canvas id="stage"></canvas>
+
+    <script>
+        // --- Register PWA Service Worker ---
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(console.error);
+        }
+
+        const canvas = document.getElementById('stage');
+        const ctx = canvas.getContext('2d');
+        const indicator = document.getElementById('indicator');
+
+        let currentType = 'emoji';
+        let gravityX = 0, gravityY = 0.5;
+        let lastX = null, lastY = null, lastZ = null;
+        let shakeThreshold = 15; 
+
+        document.getElementById('itemType').addEventListener('change', (e) => currentType = e.target.value);
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        const entities = [];
+
+        // Motion & Shake Handlers
+        function handleMotion(event) {
+            let acc = event.accelerationIncludingGravity;
+            if (!acc) return;
+
+            // Simple high-pass shake detection filter
+            if (lastX !== null) {
+                let deltaX = Math.abs(acc.x - lastX);
+                let deltaY = Math.abs(acc.y - lastY);
+                let deltaZ = Math.abs(acc.z - lastZ);
+                
+                if ((deltaX > shakeThreshold && deltaY > shakeThreshold) || deltaZ > shakeThreshold + 5) {
+                    // Instantly detonate all existing bombs on screen!
+                    entities.forEach(ent => { if(ent.type === 'bomb') ent.lifeSpan = 0; });
+                }
+            }
+            lastX = acc.x; lastY = acc.y; lastZ = acc.z;
+        }
+
+        function handleOrientation(event) {
+            gravityX = (event.gamma / 90) * 0.8;
+            gravityY = (event.beta / 90) * 0.8;
+            indicator.innerText = `Tilt Gravity Active ➔ Shake phone to Detonate Bombs!`;
+        }
+
+        // Lock in listeners on the first user interaction screen tap
+        window.addEventListener('click', () => {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission().then(state => {
+                    if (state === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation);
+                        window.addEventListener('devicemotion', handleMotion);
+                    }
+                });
+            } else {
+                window.addEventListener('deviceorientation', handleOrientation);
+                window.addEventListener('devicemotion', handleMotion);
+            }
+        }, { once: true });
+
+        class PhysicalEntity {
+            constructor(x, y, type) {
+                this.x = x; this.y = y; this.type = type;
+                this.vx = (Math.random() - 0.5) * 4;
+                this.vy = (Math.random() - 0.5) * 4;
+                this.size = Math.random() * 12 + 34;
+                this.rotation = Math.random() * Math.PI * 2;
+                this.vRotation = (Math.random() - 0.5) * 0.05;
+                this.createdAt = Date.now();
+                this.lifeSpan = 6000;
+                this.sprite = type === 'emoji' ? '😂' : type === 'bomb' ? '💣' : '🎈';
+            }
+
+            update() {
+                if (Date.now() - this.createdAt > this.lifeSpan) {
+                    if (this.type === 'bomb') this.explode();
+                    return false;
+                }
+
+                if (this.type === 'balloon') {
+                    this.vx -= gravityX * 0.6;
+                    this.vy -= (gravityY + 0.2);
+                } else {
+                    this.vx += gravityX;
+                    this.vy += gravityY;
+                }
+
+                this.vx *= 0.98; this.vy *= 0.98;
+                this.x += this.vx; this.y += this.vy;
+                this.rotation += this.vRotation;
+
+                const r = this.size / 2;
+                if (this.y > canvas.height - r) { this.y = canvas.height - r; this.vy *= -0.4; }
+                if (this.y < r) { this.y = r; this.vy *= -0.4; }
+                if (this.x > canvas.width - r) { this.x = canvas.width - r; this.vx *= -0.4; }
+                if (this.x < r) { this.x = r; this.vx *= -0.4; }
+                return true;
+            }
+
+            explode() {
+                entities.forEach(ent => {
+                    if (ent === this) return;
+                    const dx = ent.x - this.x, dy = ent.y - this.y, d = Math.hypot(dx, dy);
+                    if (d < 220) {
+                        const f = (220 - d) / 10;
+                        ent.vx += (dx / d) * f; ent.vy += (dy / d) * f;
+                    }
+                });
+            }
+
+            draw() {
+                const left = this.lifeSpan - (Date.now() - this.createdAt);
+                ctx.save();
+                if(left < 1000) ctx.globalAlpha = Math.max(0, left / 1000);
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotation);
+                ctx.font = `${this.size}px Arial`;
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText(this.sprite, 0, 0);
+                ctx.restore();
+            }
+        }
+
+        function spawn(x, y) { if (y > 130) entities.push(new PhysicalEntity(x, y, currentType)); }
+        window.addEventListener('mousedown', (e) => spawn(e.clientX, e.clientY));
+        window.addEventListener('touchstart', (e) => spawn(e.touches[0].clientX, e.touches[0].clientY));
+
+        document.getElementById('burstBtn').addEventListener('click', () => {
+            const t = ['emoji', 'bomb', 'balloon'];
+            for(let i=0; i<15; i++) entities.push(new PhysicalEntity(canvas.width/2, canvas.height/2, t[Math.floor(Math.random()*3)]));
+        });
+        document.getElementById('clearBtn').addEventListener('click', () => entities.length = 0);
+
+        function loop() {
+            ctx.fillStyle = '#050508'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            for (let i = entities.length - 1; i >= 0; i--) {
+                if (!entities[i].update()) entities.splice(i, 1); else entities[i].draw();
+            }
+            requestAnimationFrame(loop);
+        }
+        loop();
+    </script>
+</body>
+</html>
